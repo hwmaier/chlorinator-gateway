@@ -42,8 +42,8 @@ MQTT_BROKER = os.getenv("MQTT_BROKER")
 MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
 MQTT_USERNAME = os.getenv("MQTT_USERNAME")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
-CHLORINATOR_MAC_ADDRESS = os.getenv("CHLORINATOR_MAC_ADDRESS", "POOL01")
-CHLORINATOR_ACCESS_CODE = os.getenv("CHLORINATOR_ACCESS_CODE")
+CHLORINATOR_NAME = os.getenv("CHLORINATOR_NAME", "POOL01")
+CHLORINATOR_CODE = os.getenv("CHLORINATOR_CODE")
 STATE_TOPIC = "chlorinator/state"
 ACTION_TOPIC = "chlorinator/action"
 
@@ -51,10 +51,10 @@ ACTION_TOPIC = "chlorinator/action"
 #
 # Global vars
 #
+loop = None
 mqttClient = mqtt.Client()
-currentMode = None
 pendingAction = None
-newAction = None
+mqttEvent = asyncio.Event()
 
 
 def state_to_json(state):
@@ -65,7 +65,7 @@ def state_to_json(state):
         validate = str(state)
     except Exception as e:
         print(f"Invalid data received: {e}")
-        return None, '{"error": true}'
+        return '{"error": true}'
 
     msg = {}
     msg['mode'] = state['mode'].value
@@ -84,7 +84,7 @@ def state_to_json(state):
     msg['pump_is_operating'] = state['pump_is_operating']
     msg['cell_is_operating'] = state['cell_is_operating']
     msg['sanitising_until_next_timer_tomorrow'] = state['sanitising_until_next_timer_tomorrow']
-    return state['mode'].value, json.dumps(msg, indent=2)
+    return json.dumps(msg, indent=2)
 
 
 async def async_get_state(self, action=None) -> dict[str, Any]:
@@ -106,7 +106,7 @@ async def async_get_state(self, action=None) -> dict[str, Any]:
             data = ChlorinatorAction(action).__bytes__()
             data = encrypt_characteristic(data, self._session_key)
             await client.write_gatt_char(UUID_CHLORINATOR_APP_ACTION, data)
-            await asyncio.sleep(1) # Wait for state change to be applied before reading back
+            await asyncio.sleep(0.5) # Wait for state change to be applied before reading back
 
         databytes = await client.read_gatt_char(UUID_CHLORINATOR_STATE)
         decrypted = decrypt_characteristic(databytes, self._session_key)
@@ -118,13 +118,17 @@ async def async_get_state(self, action=None) -> dict[str, Any]:
 ChlorinatorAPI.async_get_state = async_get_state
 
 
-async def discover_chlorinator(mac_address, access_code):
+async def discover_chlorinator(mac_or_name, access_code):
     """Discover chlorinator using BLE"""
-    print("Scanning for chlorinator...")
-    devices = await BleakScanner.discover(timeout=10.0)
-    device = next((d for d in devices if d.address == mac_address), None)
-    if not device:
-        raise Exception(f"Could not find chlorinator with address {mac_address}")
+    print(f"Scanning for chlorinator {mac_or_name}...")
+    if ":" in mac_or_name:
+        device = await BleakScanner.find_device_by_address(mac_or_name, timeout=10.0)
+    else:
+        device = await BleakScanner.find_device_by_name(mac_or_name, timeout=10.0)
+    if device:
+        print(f"Chlorinator {device.address} found and connected.")
+    else:
+        raise Exception(f"Could not find chlorinator with name or address {mac_or_name}")
     return ChlorinatorAPI(device, access_code)
 
 
@@ -150,10 +154,10 @@ def on_mqtt_disconnect(client, userdata, disconnect_flags): #, reason_code, prop
 
 def on_mqtt_command(client, userdata, message):
     """Callback when we receive a new chlorinator action command from MQTT broker"""
-    global pendingAction, newAction
+    global pendingAction, mqttEvent
     try:
         pendingAction = int(message.payload)
-        newAction = True
+        loop.call_soon_threadsafe(mqttEvent.set)
         print("%s: %s" % (message.topic, ChlorinatorActions(int(message.payload))._name_))
     except:
         print("%s: %s" % (message.topic, message.payload))
@@ -175,7 +179,8 @@ def mqtt_thread():
 
 async def main():
     """Main thread"""
-    global pendingAction, newAction, mqttClient
+    global pendingAction, mqttEvent, mqttClient, loop
+    loop = asyncio.get_running_loop()
     chlorinator = None
     threading.Thread(target=mqtt_thread, daemon=True).start()
 
@@ -186,18 +191,17 @@ async def main():
             #
             if chlorinator is None:
                 try:
-                    chlorinator = await discover_chlorinator(CHLORINATOR_MAC_ADDRESS, CHLORINATOR_ACCESS_CODE)
-                    print(f"Chlorinator {CHLORINATOR_MAC_ADDRESS} found and connected.")
+                    chlorinator = await discover_chlorinator(CHLORINATOR_NAME, CHLORINATOR_CODE)
                 except Exception as e:
                     print(f"Bluetooth connection failed: {e}")
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(10)
                     continue
             #
             # Read chlorinator state
             #
             try:
                 state = await chlorinator.async_get_state(pendingAction)
-                currentMode, json = state_to_json(state)
+                json = state_to_json(state)
                 mqttClient.publish(STATE_TOPIC, json)
             except BleakError as e:
                 print(f"Bluetooth error: {e}, trying to reconnect...")
@@ -206,14 +210,13 @@ async def main():
                 print(f"Unexpected error: {e}")
         else:
             chlorinator = None
-            currentMode = None
 
-        # Wait for next cycle, pseudo-interruptable when a new action arrives
-        for _ in range(10):
-            if newAction:
-                newAction = False
-                break
-            await asyncio.sleep(1)
+        # Wait for next cycle, either time or a new MQTT message
+        try:
+            await asyncio.wait_for(mqttEvent.wait(), timeout=10)
+            mqttEvent.clear()
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            pass
 
 
 #
