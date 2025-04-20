@@ -1,0 +1,3 @@
+[submodule "pychlorinator"]
+	path = pychlorinator
+	url = https://github.com/pbutterworth/pychlorinator.git
