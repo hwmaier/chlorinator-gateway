@@ -36,14 +36,111 @@ Install a recent version Raspberry PI OS and setup WiFi. Then add these Python r
 - `sudo pip3 install pycryptodome --break-system-packages`
 - `sudo apt-get install python3-dotenv`
 - `sudo apt-get install git`
-- Clone this project
+- git clone this project
 - Copy `.env.sample` to `.env` and edit the configuration settings to suit your local setup.
 - Run `python3 ble2mqtt.py` to test
 
+Edit the `ble2mqtt.service` service template and adjust directory locations and user name to match your setup.
+
+Install the service:
+
+```
+sudo cp ble2mqtt.service /etc/systemd/system
+sudo systemctl daemon-reload
+sudo systemctl enable ble2mqtt.service
+sudo systemctl start ble2mqtt.service
+```
+To check the status of the service:
+
+```
+sudo systemctl status ble2mqtt.service
+```
+
+To monitor logs:
+
+```
+sudo journalctl -u ble2mqtt.service -f
+```
+
+Example log:
+
+```
+Apr 20 19:36:31 poolproxy systemd[1]: Started ble2mqtt.service - MQTT Gateway for Astral Pool chlorinators.
+Apr 20 19:36:33 poolproxy python3[3578]: Connected to MQTT Broker 192.168.0.101:1883.
+Apr 20 19:36:43 poolproxy python3[3578]: Scanning for chlorinator...
+Apr 20 19:36:54 poolproxy python3[3578]: Chlorinator D1:60:30:12:34:56 found and connected.
+```
 
 ## Configuration
 
 Copy `.env.sample` to `.env` and edit the configuration settings to suit your local setup. The access code is the same code used to connect with the *ChlorinatorGO* smartphone app and can be found in the chlorinators' maintenance menu.
+
+
+## Operation
+
+After starting the Python app, it will connect to the MQTT broker and also establish the BLE connection with the chlorinator. Once both are established, the chlorinator state is updated cyclically every 10s. The app automatically re-connects to broker and chlorinator.
+
+It publishes the topic `chlorinator/state` with a JSON object reflecting the chlorinator state
+
+The most important state attribute is the `mode`:
+
+| Name       | Value |
+|------------|-------|
+| Off        | 0     |
+| ManualOn   | 1     |
+| Auto       | 2     |
+
+
+```json
+{
+  "mode": 1,
+  "pump_speed": 2,
+  "active_timer": 0,
+  "info_message": "NoMessage",
+  "ph_measurement": 0,
+  "chlorine_control_status": 0,
+  "chemistry_values_current": false,
+  "chemistry_values_valid": false,
+  "time_hours": 18,
+  "time_minutes": 33,
+  "time_seconds": 48,
+  "spa_selection": false,
+  "pump_is_priming": false,
+  "pump_is_operating": true,
+  "cell_is_operating": true,
+  "sanitising_until_next_timer_tomorrow": false
+}
+```
+
+In case of an BLE connection error the json object will just be an error object:
+
+```json
+{"error": true}
+```
+
+
+It also subscribes to the topic `chlorinator/action` were a valid action can be written to.
+
+The action can be one of these values:
+
+| Action                             | Value |
+|------------------------------------|-------|
+| NoAction                           | 0     |
+| Off                                | 1     |
+| Auto                               | 2     |
+| Manual                             | 3     |
+| Low                                | 4     |
+| Medium                             | 5     |
+| High                               | 6     |
+| Pool                               | 7     |
+| Spa                                | 8     |
+| DismissInfoMessage                 | 9     |
+| DisableAcidDosingIndefinitely      | 10    |
+| DisableAcidDosingForPeriod         | 11    |
+| ResetStatistics                    | 12    |
+| TriggerCellReversal                | 13    |
+
+Note: Not every chlorinator model supports all of these actions.
 
 
 ## Credit
