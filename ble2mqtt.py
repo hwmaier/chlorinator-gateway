@@ -54,6 +54,7 @@ ACTION_TOPIC = "chlorinator/action"
 mqttClient = mqtt.Client()
 currentMode = None
 pendingAction = None
+newAction = None
 
 
 def state_to_json(state):
@@ -101,9 +102,11 @@ async def async_get_state(self, action=None) -> dict[str, Any]:
         await client.write_gatt_char(UUID_MASTER_AUTHENTICATION, mac)
 
         if (action):
+            print(f"Writing action {action}")
             data = ChlorinatorAction(action).__bytes__()
             data = encrypt_characteristic(data, self._session_key)
             await client.write_gatt_char(UUID_CHLORINATOR_APP_ACTION, data)
+            await asyncio.sleep(1) # Wait for state change to be applied before reading back
 
         databytes = await client.read_gatt_char(UUID_CHLORINATOR_STATE)
         decrypted = decrypt_characteristic(databytes, self._session_key)
@@ -147,9 +150,10 @@ def on_mqtt_disconnect(client, userdata, disconnect_flags): #, reason_code, prop
 
 def on_mqtt_command(client, userdata, message):
     """Callback when we receive a new chlorinator action command from MQTT broker"""
-    global pendingAction
+    global pendingAction, newAction
     try:
         pendingAction = int(message.payload)
+        newAction = True
         print("%s: %s" % (message.topic, ChlorinatorActions(int(message.payload))._name_))
     except:
         print("%s: %s" % (message.topic, message.payload))
@@ -171,7 +175,7 @@ def mqtt_thread():
 
 async def main():
     """Main thread"""
-    global pendingAction, mqttClient
+    global pendingAction, newAction, mqttClient
     chlorinator = None
     threading.Thread(target=mqtt_thread, daemon=True).start()
 
@@ -193,7 +197,6 @@ async def main():
             #
             try:
                 state = await chlorinator.async_get_state(pendingAction)
-                pendingAction = None
                 currentMode, json = state_to_json(state)
                 mqttClient.publish(STATE_TOPIC, json)
             except BleakError as e:
@@ -205,8 +208,12 @@ async def main():
             chlorinator = None
             currentMode = None
 
-        # Wait for next cycle
-        await asyncio.sleep(10)
+        # Wait for next cycle, pseudo-interruptable when a new action arrives
+        for _ in range(10):
+            if newAction:
+                newAction = False
+                break
+            await asyncio.sleep(1)
 
 
 #
