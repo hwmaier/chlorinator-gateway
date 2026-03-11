@@ -9,6 +9,6 @@ from bleak import BleakScanner
 async def scan():
     devices = await BleakScanner.discover()
     for d in devices:
-        print(d)
+        print(f"Address: {d.address}, Name: {d.name}, RSSI: {d.rssi} dBm")
 
 asyncio.run(scan())

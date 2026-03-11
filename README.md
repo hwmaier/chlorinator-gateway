@@ -31,12 +31,16 @@ A Raspberry PI with Wifi and BLE Bluetooth support. Tested it with a *Raspberry 
 
 Install a recent version Raspberry PI OS and setup WiFi. Then add these Python requirements to your installation:
 
-- `sudo apt-get install python3-bleak`
+- `sudo apt-get install python3-pip`
 - `sudo apt-get install python3-paho-mqtt`
-- `sudo pip3 install pycryptodome --break-system-packages`
 - `sudo apt-get install python3-dotenv`
+- `sudo pip3 install pycryptodome --break-system-packages`
+- `sudo pip3 install "bleak==2.1.1" --break-system-packages`
+- `sudo pip3 install bleak-retry-connector --break-system-packages`
 - `sudo apt-get install git`
-- git clone this project
+- `git clone --recurse-submodules https://github.com/hwmaier/chlorinator-gateway`
+- Unblock Bluetooth with `sudo rfkill unblock bluetooth`
+- Run `python3 scan.py` to list all Bluetooth devices in vicinity. Check that the chlorinator is part of that list.
 - Copy `.env.sample` to `.env` and edit the configuration settings to suit your local setup.
 - Run `python3 ble2mqtt.py` to test
 
@@ -115,7 +119,7 @@ The most important state attribute is the `mode`:
 In case of an BLE connection error the json object will just be an error object:
 
 ```json
-{"error": true}
+{"error": "Some error message"}
 ```
 
 

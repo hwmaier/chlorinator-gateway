@@ -10,6 +10,7 @@ import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
 from typing import Any
 from bleak import BleakScanner, BleakClient, BleakError
+from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 sys.path.append('pychlorinator')
 from pychlorinator.chlorinator import (
     UUID_SLAVE_SESSION_KEY,
@@ -21,9 +22,11 @@ from pychlorinator.chlorinator import (
     encrypt_characteristic,
 )
 from pychlorinator.chlorinator_parsers import (
+    Modes as ChlorinatorModes,
+    SpeedLevels,
     ChlorinatorState,
-    ChlorinatorActions,
     ChlorinatorAction,
+    ChlorinatorActions,
 )
 
 
@@ -47,13 +50,53 @@ STATE_TOPIC = "chlorinator/state"
 ACTION_TOPIC = "chlorinator/action"
 
 
-#
-# Global vars
-#
-loop = None
-mqttClient = mqtt.Client()
-pendingAction = None
-mqttEvent = asyncio.Event()
+class ActionEvent(asyncio.Event):
+    """Custom event class which can carry an action payload"""
+    def __init__(self):
+        super().__init__()
+        self._payload = None
+
+    def set(self, payload=None):
+        self._payload = payload
+        super().set()
+
+    async def wait(self):
+        await super().wait()
+        return self._payload
+
+    def clear(self):
+        self._payload = None
+        super().clear()
+
+
+def process_action(action, state):
+    """Process the action if it leads to a state change. Otherwise discard it."""
+    match action:
+        case ChlorinatorActions.Off:
+            if state['mode'] == ChlorinatorModes.Off:
+                return False
+        case ChlorinatorActions.Auto:
+            if state['mode'] == ChlorinatorModes.Auto:
+                return False
+        case ChlorinatorActions.Manual:
+            if state['mode'] == ChlorinatorModes.ManualOn:
+                return False
+        case ChlorinatorActions.Pool:
+            if state['spa_selection'] == False:
+                return False
+        case ChlorinatorActions.Spa:
+            if state['spa_selection'] == True:
+                return False
+        case ChlorinatorActions.Low:
+            if state['pump_speed'] == SpeedLevels.Low:
+                return False
+        case ChlorinatorActions.Medium:
+            if state['pump_speed'] == SpeedLevels.Medium:
+                return False
+        case ChlorinatorActions.High:
+            if state['pump_speed'] == SpeedLevels.High:
+                return False
+    return action
 
 
 def state_to_json(state):
@@ -87,29 +130,41 @@ def state_to_json(state):
 
 
 async def chlorinator_get_state(ble_device, access_code, action=None) -> dict[str, Any]:
-    """Connect to the Chlorinator and read just the state and optionally write an action command."""    
-    result = {}
+    """Connect to the Chlorinator and read just the state and optionally write an action command."""
+    result: dict[str, Any] = {}
 
-    if ble_device is None:
-        return result
+    client = await establish_connection(
+        BleakClientWithServiceCache,  # Use BleakClientWithServiceCache for service caching
+        ble_device,
+        ble_device.name or "Unknown Device",
+        max_attempts=4,
+    )
 
-    async with BleakClient(ble_device, timeout=10) as client:
+    try:
         session_key = await client.read_gatt_char(UUID_SLAVE_SESSION_KEY)
 
         mac = encrypt_mac_key(session_key, bytes(access_code, "utf_8"))
         await client.write_gatt_char(UUID_MASTER_AUTHENTICATION, mac)
 
-        if (action):
-            print(f"Writing action {action}")
+        if action:
+            print(f"BLE writing action: {action}")
             data = ChlorinatorAction(action).__bytes__()
             data = encrypt_characteristic(data, session_key)
             await client.write_gatt_char(UUID_CHLORINATOR_APP_ACTION, data)
-            await asyncio.sleep(0.5) # Wait for state change to be applied before reading back
+            await asyncio.sleep(0.5) # Wait for state change to be applied before reading back            
 
+        print("BLE read state")
         databytes = await client.read_gatt_char(UUID_CHLORINATOR_STATE)
         decrypted = decrypt_characteristic(databytes, session_key)
         result.update(vars(ChlorinatorState(decrypted)))
 
+    finally:
+        try:
+            await client.disconnect()
+        except EOFError:	
+            # Known teardown issue: BlueZ closed D-Bus connection early
+            pass
+        
     return result
 
 
@@ -144,74 +199,86 @@ def on_mqtt_connect_fail(client, userdata):
 def on_mqtt_disconnect(client, userdata, disconnect_flags): #, reason_code, properties):
     """MQTT diconnection callback handler"""
     # print(f"MQTT disconnected with code {reason_code}!")
-    print(f"MQTT disconnected!")
+    print("MQTT disconnected!")
 
 
 def on_mqtt_command(client, userdata, message):
-    """Callback when we receive a new chlorinator action command from MQTT broker"""
-    global pendingAction, mqttEvent
+    """Callback when we receive a new chlorinator action command from MQTT broker."""
+    loop, event = userdata
     try:
-        pendingAction = int(message.payload)
-        loop.call_soon_threadsafe(mqttEvent.set)
-        print("%s: %s" % (message.topic, ChlorinatorActions(int(message.payload))._name_))
+        action = ChlorinatorActions(int(message.payload))
+        loop.call_soon_threadsafe(event.set, action)
+        print(f"New action: {action}")
     except:
-        print("%s: %s" % (message.topic, message.payload))
-        pendingAction = None
+        print(f"Unknown action: {message.payload}")
 
 
-def mqtt_thread():
+def mqtt_thread(client):
     """MQTT backgroun thread. Handles connection reties automatically."""
-    global mqttClient
-    mqttClient.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
-    mqttClient.on_connect = on_mqtt_connect
-    mqttClient.on_disconnect = on_mqtt_disconnect
-    mqttClient.on_connect_fail = on_mqtt_connect_fail
-    mqttClient.message_callback_add(ACTION_TOPIC, on_mqtt_command)
-    mqttClient.reconnect_delay_set(min_delay=10, max_delay=60)
-    mqttClient.connect_async(MQTT_BROKER, MQTT_PORT, 10)
-    mqttClient.loop_forever(retry_first_connection=True)
+    client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+    client.on_connect = on_mqtt_connect
+    client.on_disconnect = on_mqtt_disconnect
+    client.on_connect_fail = on_mqtt_connect_fail
+    client.message_callback_add(ACTION_TOPIC, on_mqtt_command)
+    client.reconnect_delay_set(min_delay=10, max_delay=60)
+    client.connect_async(MQTT_BROKER, MQTT_PORT, 10)
+    client.loop_forever(retry_first_connection=True)
 
 
 async def main():
     """Main thread"""
-    global pendingAction, mqttEvent, mqttClient, loop
     loop = asyncio.get_running_loop()
-    ble_device = None
-    threading.Thread(target=mqtt_thread, daemon=True).start()
+    mqttEvent = ActionEvent()
+    mqttClient = mqtt.Client(userdata=(loop, mqttEvent))
+    bleDevice = None
+    pendingAction = None
+    threading.Thread(target=mqtt_thread, args=(mqttClient,), daemon=True).start()
 
     while True:
         if mqttClient.is_connected():
             #
             # Re-connect bluetooth
             #
-            if ble_device is None:
+            if bleDevice is None:
                 try:
-                    ble_device = await chlorinator_discover(CHLORINATOR_NAME)
+                    bleDevice = await chlorinator_discover(CHLORINATOR_NAME)
                 except Exception as e:
-                    print(f"Bluetooth connection failed: {e}")
-                    await asyncio.sleep(10)
+                    print(f"BLE connection failed: {e}")
+                    mqttClient.publish(STATE_TOPIC, state_to_json({"error": f"BLE connection failed: {e}"}))
+                    await asyncio.sleep(10) # Re-connection delay
                     continue
+
             #
             # Read chlorinator state
             #
             try:
-                state = await chlorinator_get_state(ble_device, CHLORINATOR_CODE, pendingAction)
+                state = await chlorinator_get_state(bleDevice, CHLORINATOR_CODE, pendingAction)
+                pendingAction = False
                 json = state_to_json(state)
                 mqttClient.publish(STATE_TOPIC, json)
+
+                #
+                # Wait for next cycle, either time or a new MQTT message
+                #
+                try:
+                    newAction = await asyncio.wait_for(mqttEvent.wait(), timeout=10)
+                    mqttEvent.clear()
+                    pendingAction = process_action(newAction, state)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+
             except BleakError as e:
-                print(f"Bluetooth error: {e}, trying to reconnect...")
-                ble_device = None  # Force rescan and reinit
+                print(f"BLE error: {e}, trying to reconnect...")
+                mqttClient.publish(STATE_TOPIC, state_to_json({"error": f"BLE error: {e}"}))
+                bleDevice = None  # Force rescan and reinit
+                await asyncio.sleep(10)
             except Exception as e:
                 print(f"Unexpected error: {e}")
-        else:
-            ble_device = None
+                mqttClient.publish(STATE_TOPIC, state_to_json({"error": f"Unexpected error: {e}"}))
 
-        # Wait for next cycle, either time or a new MQTT message
-        try:
-            await asyncio.wait_for(mqttEvent.wait(), timeout=10)
-            mqttEvent.clear()
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            pass
+        else:
+            bleDevice = None
+            await asyncio.sleep(10)
 
 
 #
