@@ -46,8 +46,9 @@ MQTT_USERNAME = os.getenv("MQTT_USERNAME")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
 CHLORINATOR_NAME = os.getenv("CHLORINATOR_NAME", "POOL01")
 CHLORINATOR_CODE = os.getenv("CHLORINATOR_CODE")
-STATE_TOPIC = "chlorinator/state"
-ACTION_TOPIC = "chlorinator/action"
+TOPIC_PATH = f"chlorinator/{CHLORINATOR_NAME.lower()}"
+STATE_TOPIC = f"{TOPIC_PATH}/state"
+ACTION_TOPIC = f"{TOPIC_PATH}/action"
 
 
 class ActionEvent(asyncio.Event):
@@ -72,6 +73,8 @@ class ActionEvent(asyncio.Event):
 def process_action(action, state):
     """Process the action if it leads to a state change. Otherwise discard it."""
     match action:
+        case ChlorinatorActions.NoAction:
+            return False
         case ChlorinatorActions.Off:
             if state['mode'] == ChlorinatorModes.Off:
                 return False
@@ -153,7 +156,6 @@ async def chlorinator_get_state(ble_device, access_code, action=None) -> dict[st
             await client.write_gatt_char(UUID_CHLORINATOR_APP_ACTION, data)
             await asyncio.sleep(0.5) # Wait for state change to be applied before reading back            
 
-        print("BLE read state")
         databytes = await client.read_gatt_char(UUID_CHLORINATOR_STATE)
         decrypted = decrypt_characteristic(databytes, session_key)
         result.update(vars(ChlorinatorState(decrypted)))
