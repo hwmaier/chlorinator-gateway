@@ -423,49 +423,49 @@ async def main():
     threading.Thread(target=mqtt_thread, args=(mqttClient,), daemon=True).start()
 
     while True:
-        if mqttClient.is_connected():
-            #
-            # Re-connect bluetooth
-            #
-            if bleDevice is None:
-                try:
-                    bleDevice = await chlorinator_discover(CHLORINATOR_NAME)
-                except Exception as e:
-                    print(f"BLE connection failed: {e}")
-                    mqttClient.publish(STATE_TOPIC, state_to_json({"error": f"BLE connection failed: {e}"}))
-                    await asyncio.sleep(10) # Re-connection delay
-                    continue
-
-            #
-            # Read chlorinator state
-            #
+        #
+        # Re-connect bluetooth
+        #
+        if bleDevice is None:
+            try:
+                bleDevice = await chlorinator_discover(CHLORINATOR_NAME)
+                await asyncio.sleep(2) # Short grace period
+            except Exception as e:
+                print(f"BLE connection failed: {e}")
+                if mqttClient.is_connected():
+                    mqttClient.publish(STATE_TOPIC, {"error": f"BLE connection failed: {e}"})
+                await asyncio.sleep(10)
+                continue                    
+        
+        if bleDevice:
             try:
                 state = await chlorinator_get_state(bleDevice, CHLORINATOR_CODE, pendingAction)
                 pendingAction = False
-                json = state_to_json(state)
-                mqttClient.publish(STATE_TOPIC, json)
-
-                #
-                # Wait for next cycle, either time or a new MQTT message
-                #
-                try:
-                    newAction = await asyncio.wait_for(mqttEvent.wait(), timeout=10)
-                    mqttEvent.clear()
-                    pendingAction = process_action(newAction, state)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    pass
-
-            except BleakError as e:
-                print(f"BLE error: {e}, trying to reconnect...")
-                mqttClient.publish(STATE_TOPIC, state_to_json({"error": f"BLE error: {e}"}))
+            except Exception as e:
+                print(f"BLE get state error: {e}")
+                if mqttClient.is_connected():
+                    mqttClient.publish(STATE_TOPIC, {"error": f"BLE get state error: {e}"})
                 bleDevice = None  # Force rescan and reinit
                 await asyncio.sleep(10)
-            except Exception as e:
-                print(f"Unexpected error: {e}")
-                mqttClient.publish(STATE_TOPIC, state_to_json({"error": f"Unexpected error: {e}"}))
+                continue
+            
+        if mqttClient.is_connected():
+            json = state_to_json(state)
+            mqttClient.publish(STATE_TOPIC, json)
 
+            #
+            # Wait for next cycle, either time or a new MQTT message
+            #
+            try:
+                newAction = await asyncio.wait_for(mqttEvent.wait(), timeout=10)
+                mqttEvent.clear()
+                pendingAction = process_action(newAction, state)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+            
         else:
-            bleDevice = None
+            # Fallback to auto
+            pendingAction = process_action(ChlorinatorActions.Auto, state)
             await asyncio.sleep(10)
 
 
