@@ -50,6 +50,190 @@ TOPIC_PATH = f"chlorinator/{CHLORINATOR_NAME.lower()}"
 STATE_TOPIC = f"{TOPIC_PATH}/state"
 ACTION_TOPIC = f"{TOPIC_PATH}/action"
 
+DISCOVERY_PREFIX = "homeassistant"
+DEVICE_ID = f"chlorinator_{CHLORINATOR_NAME.lower()}"
+DEVICE_INFO = {
+    "identifiers": [DEVICE_ID],
+    "manufacturer": "HM",
+    "model": "MQTT Gateway for Astral Pool chlorinators",
+    "name": CHLORINATOR_NAME,
+}
+
+
+def publish_autodiscovery(client):
+    """Publish one Device‑Discovery payload (Home Assistant ≥ 2023.12)."""
+    topic = f"{DISCOVERY_PREFIX}/device/{TOPIC_PATH}/config"
+    payload = {
+        # dev  →  the actual device metadata
+        "dev": {
+            "ids": f"chlorinator_{CHLORINATOR_NAME.lower()}",
+            "name": f"Chlorinator {CHLORINATOR_NAME}",
+            "mf": "Open Source",
+            "mdl": "MQTT Gateway for Astral Pool",
+            # "sn": CHLORINATOR_CODE or "",
+        },
+        # o  →  origin / bridge metadata  (optional)
+        "o": {
+            "name": "chlorinator-gateway",
+            "url": "https://github.com/hwmaier/chlorinator-gateway",
+        },
+        # cmps  →  component definitions (each entry == one entity)
+        "cmps": {
+            "mode": {
+                "name": "Mode",
+                "p": "sensor",
+                "device_class": None,
+                "icon": "mdi:auto-mode",
+                "value_template": (
+                    "{% set map = {0:'Off', 1:'Manual on', 2:'Auto'} %}"
+                    "{{ map[value_json.mode|int] }}"
+                ),                
+                "payload_on": True,
+                "payload_off": False,
+                "unique_id": f"{DEVICE_ID}_mode",
+            },
+            "pump_is_operating": {
+                "name": "Pump",                
+                "p": "binary_sensor",
+                "device_class": "running",
+                "value_template": "{{ value_json.pump_is_operating }}",
+                "payload_on": True,
+                "payload_off": False,
+                "unique_id": f"{DEVICE_ID}_pump_operating",
+            },
+            "pump_is_priming": {
+                "name": "Priming",                
+                "p": "binary_sensor",
+                "device_class": "running",
+                "value_template": "{{ value_json.pump_is_priming }}",
+                "payload_on": True,
+                "payload_off": False,
+                "unique_id": f"{DEVICE_ID}_pump_priming",
+            },
+            "cell_is_operating": {
+                "name": "Cell",
+                "p": "binary_sensor",
+                "value_template": "{{ value_json.cell_is_operating }}",
+                "payload_on": True,
+                "payload_off": False,
+                "unique_id": f"{DEVICE_ID}_cell_operating",
+            },            
+            "active_timer": {
+                "name": "Active Timer",
+                "p": "sensor",
+                "value_template": "{{ value_json.active_timer }}",
+                "unique_id": f"{DEVICE_ID}_active_timer",
+            },                        
+            "sanitising_until_next_timer_tomorrow": {
+                "name": "Sanitising until next timer tomorrow",
+                "p": "binary_sensor",
+                "value_template": "{{ value_json.sanitising_until_next_timer_tomorrow }}",
+                "payload_on": True,
+                "payload_off": False,
+                "unique_id": f"{DEVICE_ID}_sanitising_until_next_timer_tomorrow",
+            },                        
+            "pump_speed": {
+                "name": "Pump Speed",                
+                "p": "sensor",
+                "device_class": None,
+                "value_template": "{{ value_json.pump_speed }}",
+                "enabled_by_default": False,
+                "unique_id": f"{DEVICE_ID}_pump_speed",
+            },
+            "ph_measurement": {
+                "name": "pH Measurement",                
+                "p": "sensor",
+                "device_class": "ph",
+                "unit_of_measurement": "",
+                "value_template": "{{ value_json.ph_measurement }}",
+                "enabled_by_default": False,
+                "unique_id": f"{DEVICE_ID}_ph",
+            },            
+            "chemistry_values_current": {
+                "name": "Chemistry Values Current",                
+                "p": "sensor",
+                "device_class": None,
+                "value_template": "{{ value_json.chemistry_values_current }}",
+                "payload_on": True,
+                "payload_off": False,                
+                "enabled_by_default": False,
+                "unique_id": f"{DEVICE_ID}_chemistry_values_current",
+            },            
+            "chemistry_values_valid": {
+                "name": "Chemistry Values Valid",                
+                "p": "sensor",
+                "device_class": None,
+                "value_template": "{{ value_json.chemistry_values_valid }}",
+                "payload_on": True,
+                "payload_off": False,
+                "enabled_by_default": False,
+                "unique_id": f"{DEVICE_ID}_chemistry_values_valid",
+            },
+            "chlorine_control_status": {
+                "name": "Chlorine Control Status",                
+                "p": "sensor",
+                "device_class": None,
+                "value_template": "{{ value_json.chlorine_control_status }}",
+                "enabled_by_default": False,
+                "unique_id": f"{DEVICE_ID}_chlorine",
+            },
+            "spa_selection": {
+                "name": "Spa Selection",                
+                "p": "sensor",
+                "device_class": None,
+                "value_template": "{{ value_json.spa_selection }}",
+                "enabled_by_default": False,
+                "unique_id": f"{DEVICE_ID}_spa",
+            },
+            "action": {
+                "name": "Action",
+                "p": "select",
+                "command_topic": ACTION_TOPIC,
+                # What the user sees in the HA drop‑down:
+                "options": [
+                    "No Action",
+                    "Off",
+                    "Automatic",
+                    "Manual",
+                    "Low speed",
+                    "Medium speed",
+                    "High speed",
+                    "Pool mode",
+                    "Spa mode",
+                    "Dismiss info message",
+                    "Disable acid dosing indefinitely",
+                    "Disable acid dosing for period",
+                    "Reset statistics",
+                    "Trigger cell reversal",
+                ],
+                # Translate selected option to the integer payload expected by your gateway:
+                "command_template": (
+                    "{% set map = {"
+                    "'No action':0,"
+                    "'Off':1,"
+                    "'Automatic':2,"
+                    "'Manual':3,"
+                    "'Low speed':4,"
+                    "'Medium speed':5,"
+                    "'High speed':6,"
+                    "'Pool mode':7,"
+                    "'Spa mode':8,"
+                    "'Dismiss info message':9,"
+                    "'Disable acid dosing indefinitely':10,"
+                    "'Disable acid dosing for period':11,"
+                    "'Reset statistics':12,"
+                    "'Trigger cell reversal':13"
+                    "} %} {{ map[value] }}"
+                ),
+                "unique_id": f"{DEVICE_ID}_action",
+            },
+        },
+        # common state topic for all cmps
+        "state_topic": STATE_TOPIC,
+        "qos": 2,
+    }
+    client.publish(topic, json.dumps(payload), retain=True)
+
 
 class ActionEvent(asyncio.Event):
     """Custom event class which can carry an action payload"""
@@ -189,6 +373,8 @@ def on_mqtt_connect(client, userdata, flags, reason_code): # , properties):
     if reason_code == mqtt.MQTT_ERR_SUCCESS:
         print(f"Connected to MQTT Broker {MQTT_BROKER}:{MQTT_PORT}.")
         client.subscribe(ACTION_TOPIC)
+        # Publish Home Assistant discovery config
+        publish_autodiscovery(client)            
     else:
         print(f"MQTT connection failed with code {reason_code}!")
 
