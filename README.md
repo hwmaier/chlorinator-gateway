@@ -1,5 +1,11 @@
 # MQTT Gateway for Astral Pool chlorinators
 
+
+> [!IMPORTANT]
+> This project has been replaced with an ESP32 based C++ version which can be found [here](
+> https://github.com/hwmaier/chlorinator-gateway-esp32.git).
+
+
 ## Intention
 
 The intention of this application is to integrate an AstralPool Viron chlorinator and CTX 280 pool pump into [Home Assistant](https://www.home-assistant.io/) end [evcc](https://evcc.io/en/) so the pool pump can be automatically started and stopped based on surplus solar energy.
